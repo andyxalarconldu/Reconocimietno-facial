@@ -1,67 +1,52 @@
-import cv2
-import face_recognition
 import os
-import time
 import numpy as np
+import datetime
+from deepface import DeepFace
 
 CARPETA_DATOS = os.path.join(os.getcwd(), "data", "fotos_registradas")
-os.makedirs(CARPETA_DATOS, exist_ok=True)
+MODELO = "Facenet"
 
-def preparar_imagen_para_dlib(frame):
-    # 1. Convertir los colores al formato requerido
+def registrar_log(nombre, estado):
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {nombre} | {estado}")
+    with open("logs_seguridad.txt", "a") as f:
+        f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {nombre} | {estado}\n")
+
+def obtener_vector(ruta_img):
     try:
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    except Exception:
-        rgb_frame = frame
-        
-    # 2. Reconstruir la matriz desde cero obligando a que sea de 8 bits (uint8)
-    # El parametro copy=True destruye metadatos anteriores y limpia la fragmentacion
-    imagen_limpia = np.array(rgb_frame, dtype=np.uint8, copy=True)
-    
-    # 3. Empaquetar como bloque solido
-    return np.ascontiguousarray(imagen_limpia)
+        rep = DeepFace.represent(img_path=ruta_img, model_name=MODELO, 
+                                 enforce_detection=True, detector_backend="retinaface")
+        return rep[0]["embedding"]
+    except:
+        return None
 
+def cargar_base_datos():
+    base = []
+    if not os.path.exists(CARPETA_DATOS): return base
+    for usuario in os.listdir(CARPETA_DATOS):
+        ruta_usuario = os.path.join(CARPETA_DATOS, usuario)
+        if os.path.isdir(ruta_usuario):
+            for arch in os.listdir(ruta_usuario):
+                if arch.endswith(".npy"):
+                    vec = np.load(os.path.join(ruta_usuario, arch))
+                    base.append({"nombre": usuario, "vector": vec})
+    return base
 
-def procesar_y_guardar_registro(frame, tipo_foto):
+def verificar_acceso(frame, base_datos, tolerancia=0.30):
+    vec_actual = obtener_vector(frame)
+    if vec_actual is None: return "NO DETECTADO", 1.0
     
-    rgb_frame = preparar_imagen_para_dlib(frame)
+    mejor_coincidencia = "DESCONOCIDO"
+    menor_distancia = 1.0
     
-    ubicaciones = face_recognition.face_locations(rgb_frame)
-    
-    if not ubicaciones:
-        return False, None, "[ERROR] No se detecto ningun rostro. Intenta de nuevo."
-    
-    embedding = face_recognition.face_encodings(rgb_frame, ubicaciones)[0]
-    
-    timestamp = int(time.time())
-    nombre_archivo = f"registro_{tipo_foto}_{timestamp}.jpg"
-    ruta_completa = os.path.join(CARPETA_DATOS, nombre_archivo)
-    
-    cv2.imwrite(ruta_completa, frame)
-    
-    return True, embedding, f"[EXITO] Foto {tipo_foto} guardada correctamente ({nombre_archivo})"
-
-
-def verificar_acceso(frame, base_embeddings_conocidos, tolerancia=0.6):
-    
-    rgb_frame = preparar_imagen_para_dlib(frame)
-    
-    ubicaciones = face_recognition.face_locations(rgb_frame)
-    resultados = []
-    
-    if not ubicaciones:
-        return resultados
-
-    embeddings_prueba = face_recognition.face_encodings(rgb_frame, ubicaciones)
-
-    for (top, right, bottom, left), emb_prueba in zip(ubicaciones, embeddings_prueba):
-        coincidencias = face_recognition.compare_faces(base_embeddings_conocidos, emb_prueba, tolerance=tolerancia)
-        
-        es_usuario_valido = True in coincidencias
-        
-        resultados.append({
-            "ubicacion": (top, right, bottom, left),
-            "acceso_permitido": es_usuario_valido
-        })
-        
-    return resultados
+    for reg in base_datos:
+        dist = 1 - (np.dot(vec_actual, reg["vector"]) / (np.linalg.norm(vec_actual) * np.linalg.norm(reg["vector"])))
+        if dist < menor_distancia:
+            menor_distancia, mejor_coincidencia = dist, reg["nombre"]
+            
+    # Filtro estricto: Si la distancia es mayor a 0.30, se bloquea aunque se parezca
+    if menor_distancia < tolerancia:
+        registrar_log(mejor_coincidencia, "ACCESO OK")
+        return mejor_coincidencia, menor_distancia
+    else:
+        registrar_log("Intruso", "ACCESO DENEGADO")
+        return "ACCESO DENEGADO", menor_distancia

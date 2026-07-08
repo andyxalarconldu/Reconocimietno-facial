@@ -1,4 +1,9 @@
+# Archivos de logs y datos de prueba
+logs_seguridad.txt
+
+# Librerías y paquetes
+*.whl
 venv/
 __pycache__/
+.ipynb_checkpoints/
 data/
-.env
